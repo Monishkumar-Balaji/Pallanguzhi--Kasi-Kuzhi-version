@@ -187,7 +187,7 @@ class Pallanguzhi(arcade.Window):
                 if beyond_pit.counters > 0:
                     self.captures[self.current_player] += beyond_pit.counters
                     self.temporary_message = f"Player {self.current_player + 1} collected {beyond_pit.counters} counters from Player {beyond_pit.row + 1}'s {beyond_pit.col}'th pit!"
-                    self.message_timer = 3.0  # 3 seconds
+                    self.message_timer = 4.0  #4 seconds
                     beyond_pit.counters = 0
                     return 
                     # continue with next non-empty
