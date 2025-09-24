@@ -47,9 +47,9 @@ class Pit:
         return f"Row:{self.row}  Col:{self.col}  Counter:{self.counters}"
 
 
-class Pallanguzhi(arcade.Window):
-    def __init__(self):
-        super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_TITLE)
+class Pallanguzhi(arcade.View):
+    def __init__(self, ai_mode=False):
+        super().__init__()
         arcade.set_background_color(BOARD_COLOR)
 
         # Create 2D grid of pits
@@ -116,10 +116,39 @@ class Pallanguzhi(arcade.Window):
             if self.message_timer <= 0:
                 self.temporary_message = None
 
+        # Always check win condition
+        if self.counters_in_pits(self.pits[0]) == 0: 
+            self.temporary_message = "Round terminates!! Wait for next round"
+            self.message_timer = 4.0  
+            self.captures[1] +=  self.counters_in_pits(self.pits[1])
+            return 
+        
+        if self.counters_in_pits(self.pits[1]) == 0: 
+            self.temporary_message = "Round terminates!! Wait for next round"
+            self.message_timer = 4.0  
+            self.captures[0] += self.counters_in_pits(self.pits[0])
+            return 
+
+    def counters_in_pits(self,row_pits):
+        sum_counters = 0
+        for pit in row_pits:
+            sum_counters+=pit.counters
+        return sum_counters
+    
     def on_mouse_press(self, x, y, button, modifiers):
         if self.distributing:
             return  # ignore clicks while sowing
-
+        
+        if self.captures[0] + self.captures[1] == START_COUNTERS*ROWS*COLS: #round terminates
+            self.temporary_message = "Round terminates!! Wait for next round"
+            self.message_timer = 4.0  
+            return # continue with reduced no. of pits
+        
+        # if self.counters_in_pits(self.pits[0]) == 0 or self.counters_in_pits(self.pits[1]) == 0:
+        #     self.temporary_message = "Round terminates!! Wait for next round"
+        #     self.message_timer = 4.0  
+        #     return # continue with reduced no. of pits
+        
         for i, row_pit in enumerate(self.pits):
             for col in range(COLS):
                 pit = row_pit[col]
@@ -216,6 +245,33 @@ class Pallanguzhi(arcade.Window):
                 self.distribution_path.pop(0)
 
 
+# ---------------- Welcome Screen ---------------- #
+class WelcomeView(arcade.View):
+    def on_show(self):
+        arcade.set_background_color(arcade.color.DARK_BLUE)
+
+    def on_draw(self):
+        self.clear()
+        arcade.draw_text("Welcome to Pallanguzhi", SCREEN_WIDTH/2, SCREEN_HEIGHT-100,
+                         arcade.color.WHITE, 28, anchor_x="center")
+
+        arcade.draw_text("Press M to Play Multiplayer", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 20,
+                         arcade.color.LIGHT_GREEN, 20, anchor_x="center")
+        arcade.draw_text("Press A to Play with AI", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 20,
+                         arcade.color.LIGHT_YELLOW, 20, anchor_x="center")
+
+    def on_key_press(self, key, modifiers):
+        if key == arcade.key.M:
+            game_view = Pallanguzhi(ai_mode=False)
+            self.window.show_view(game_view)
+        elif key == arcade.key.A:
+            game_view = Pallanguzhi(ai_mode=True)
+            self.window.show_view(game_view)
+
+
 if __name__ == "__main__":
-    game = Pallanguzhi()
+    window = arcade.Window(SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_TITLE)
+    welcome = WelcomeView()
+    window.show_view(welcome)
     arcade.run()
+
