@@ -7,12 +7,13 @@ import copy
 
 
 class Pallanguzhi(arcade.View):
-    def __init__(self, ai_mode=False, total_rounds=3, current_round=1, previous_captures=None):
+    def __init__(self, ai_mode=False, total_rounds=3, current_round=1, previous_captures=None, ai_difficulty=AI_MEDIUM):
         super().__init__()
         arcade.set_background_color(BOARD_COLOR)
         self.ai_mode = ai_mode
         self.total_rounds = total_rounds
         self.current_round = current_round
+        self.ai_difficulty = ai_difficulty
 
         # Create 2D grid of pits
         self.pits = []
@@ -197,7 +198,6 @@ class Pallanguzhi(arcade.View):
     def ai_move(self, delta_time):
         arcade.unschedule(self.ai_move)
         
-        # Check again if game should terminate
         if self.check_termination():
             return
         
@@ -211,24 +211,281 @@ class Pallanguzhi(arcade.View):
             self.check_termination()
             return
 
-        best_move = None
-        best_score = -1
-        
-        for col in valid_moves:
-            score = self.evaluate_move(col)
-            if score > best_score:
-                best_score = score
-                best_move = col
+        if self.ai_difficulty == AI_EASY:
+            best_move = self.easy_ai(valid_moves)
+        elif self.ai_difficulty == AI_MEDIUM:
+            best_move = self.medium_ai(valid_moves)
+        else:  # AI_HARD
+            best_move = self.hard_ai(valid_moves)
         
         if best_move is not None:
             pit = self.pits[1][best_move]
             self.selected_pit = (pit.row, pit.col)
             self.start_distribution(pit)
 
+    def easy_ai(self, valid_moves):
+        """Easy AI: Makes suboptimal moves, sometimes chooses worse options"""
+        # Evaluate all moves
+        moves_with_scores = []
+        for col in valid_moves:
+            score = self.evaluate_move(col)
+            moves_with_scores.append((col, score))
+        
+        # Sort by score (lowest first for easy AI)
+        moves_with_scores.sort(key=lambda x: x[1])
+        
+        # Easy AI has 70% chance to choose a suboptimal move, 30% chance for random
+        if random.random() < 0.7 and len(moves_with_scores) > 1:
+            # Choose from the bottom half (worse moves)
+            half = len(moves_with_scores) // 2
+            return random.choice(moves_with_scores[:half])[0]
+        else:
+            # Completely random move
+            return random.choice(valid_moves)
+
+    def medium_ai(self, valid_moves):
+        """Medium AI: Generally chooses good moves with some randomness"""
+        best_score = -999
+        good_moves = []
+        
+        for col in valid_moves:
+            score = self.evaluate_move(col)
+            if score > best_score:
+                best_score = score
+                good_moves = [col]
+            elif score == best_score:
+                good_moves.append(col)
+        
+        # Medium AI has 80% chance to choose best move, 20% chance for second best
+        if len(good_moves) > 1 and random.random() < 0.2:
+            return random.choice(good_moves[1:])
+        else:
+            return random.choice(good_moves)
+
+    def hard_ai(self, valid_moves):
+        """Hard AI: Uses minimax with alpha-beta pruning for optimal moves"""
+        best_score = -float('inf')
+        best_moves = []
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        for col in valid_moves:
+            # Create a copy of the game state for simulation
+            state = self.get_game_state()
+            
+            # Simulate the move
+            new_state, extra_turn = self.simulate_move_state(state, col, 1)  # AI is player 1
+            
+            if extra_turn:
+                # If extra turn, maximize further
+                score = self.minimax(new_state, 2, alpha, beta, True, 1)  # AI continues
+            else:
+                # Opponent's turn
+                score = self.minimax(new_state, 2, alpha, beta, False, 1)  # Opponent plays
+            
+            if score > best_score:
+                best_score = score
+                best_moves = [col]
+            elif score == best_score:
+                best_moves.append(col)
+            
+            alpha = max(alpha, best_score)
+            if beta <= alpha:
+                break
+        
+        return random.choice(best_moves) if best_moves else valid_moves[0]
+
+    def minimax(self, state, depth, alpha, beta, maximizing_player, current_player):
+        """
+        Minimax algorithm with alpha-beta pruning
+        state: (pits, captures, rubbish_holes)
+        """
+        pits, captures, rubbish_holes = state
+        
+        # Terminal node or depth limit reached
+        if depth == 0 or self.is_terminal_state(pits, rubbish_holes, current_player):
+            return self.evaluate_state(state, 1)  # Evaluate from AI's perspective (player 1)
+        
+        valid_moves = self.get_valid_moves(pits, rubbish_holes, current_player)
+        
+        if not valid_moves:
+            # No moves available - switch player or terminal
+            if self.is_terminal_state(pits, rubbish_holes, 1 - current_player):
+                return self.evaluate_state(state, 1)
+            else:
+                return self.minimax(state, depth - 1, alpha, beta, not maximizing_player, 1 - current_player)
+        
+        if maximizing_player:
+            max_eval = -float('inf')
+            for col in valid_moves:
+                new_state, extra_turn = self.simulate_move_state(state, col, current_player)
+                
+                if extra_turn:
+                    # Same player continues
+                    eval = self.minimax(new_state, depth - 1, alpha, beta, True, current_player)
+                else:
+                    # Switch player
+                    eval = self.minimax(new_state, depth - 1, alpha, beta, False, 1 - current_player)
+                
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid_moves:
+                new_state, extra_turn = self.simulate_move_state(state, col, current_player)
+                
+                if extra_turn:
+                    # Same player continues (minimizing)
+                    eval = self.minimax(new_state, depth - 1, alpha, beta, False, current_player)
+                else:
+                    # Switch player (maximizing)
+                    eval = self.minimax(new_state, depth - 1, alpha, beta, True, 1 - current_player)
+                
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    def get_game_state(self):
+        """Get current game state for simulation"""
+        pits = [[self.pits[row][col].counters for col in range(COLS)] for row in range(ROWS)]
+        captures = self.captures.copy()
+        rubbish_holes = copy.deepcopy(self.rubbish_holes)
+        return (pits, captures, rubbish_holes)
+
+    def simulate_move_state(self, state, col, player):
+        """
+        Simulate a move and return new state and whether extra turn is granted
+        Returns: (new_state, extra_turn)
+        """
+        pits, captures, rubbish_holes = copy.deepcopy(state)
+        row = player
+        
+        # Start distribution
+        counters = pits[row][col]
+        pits[row][col] = 0
+        current_row, current_col = row, col
+        
+        # Distribute counters
+        for _ in range(counters):
+            # Move to next pit
+            if current_row == 1:
+                current_col += 1
+                if current_col >= COLS:
+                    current_row = 0
+                    current_col = COLS - 1
+            else:
+                current_col -= 1
+                if current_col < 0:
+                    current_row = 1
+                    current_col = 0
+            
+            # Skip rubbish holes
+            if rubbish_holes[current_row][current_col]:
+                continue
+                
+            pits[current_row][current_col] += 1
+            
+            # Check for Pasu capture during distribution
+            if pits[current_row][current_col] == 4:
+                capturing_player = current_row  # Owner of the pit gets the capture
+                captures[capturing_player] += 4
+                pits[current_row][current_col] = 0
+    
+        # Check for standard capture at the end
+        last_row, last_col = current_row, current_col
+        
+        # Check if turn continues (if last pit has counters to pick up)
+        next_path = self.get_simulation_path(last_row, last_col, rubbish_holes)
+        if next_path:
+            next_r, next_c = next_path[0]
+            extra_turn = (pits[next_r][next_c] > 0)
+        else:
+            extra_turn = False
+        
+        # Check for standard capture
+        if len(next_path) > 1 and pits[next_r][next_c] == 0:
+            beyond_r, beyond_c = next_path[1]
+            if not rubbish_holes[beyond_r][beyond_c] and pits[beyond_r][beyond_c] > 0:
+                captures[player] += pits[beyond_r][beyond_c]
+                pits[beyond_r][beyond_c] = 0
+        
+        return (pits, captures, rubbish_holes), extra_turn
+
+    def get_simulation_path(self, start_row, start_col, rubbish_holes):
+        """Get distribution path for simulation"""
+        path = []
+        r, c = start_row, start_col
+        
+        for _ in range(COLS * 2):  # Enough for one full cycle
+            if r == 1:
+                c += 1
+                if c >= COLS:
+                    r = 0
+                    c = COLS - 1
+            else:
+                c -= 1
+                if c < 0:
+                    r = 1
+                    c = 0
+            
+            if not rubbish_holes[r][c]:
+                path.append((r, c))
+        
+        return path
+
+    def get_valid_moves(self, pits, rubbish_holes, player):
+        """Get valid moves for a player in the given state"""
+        valid_moves = []
+        for col in range(COLS):
+            if pits[player][col] > 0 and not rubbish_holes[player][col]:
+                valid_moves.append(col)
+        return valid_moves
+
+    def is_terminal_state(self, pits, rubbish_holes, player):
+        """Check if the game is in a terminal state for the given player"""
+        for col in range(COLS):
+            if not rubbish_holes[player][col] and pits[player][col] > 0:
+                return False
+        return True
+
+    def evaluate_state(self, state, ai_player):
+        """
+        Evaluate the game state from AI's perspective
+        Higher score = better for AI
+        """
+        pits, captures, rubbish_holes = state
+        opponent = 1 - ai_player
+        
+        score = 0
+        
+        # Primary: Capture difference (most important)
+        score += (captures[ai_player] - captures[opponent]) * 1000
+        
+        # Secondary: Counter advantage in pits
+        ai_pit_counters = sum(pits[ai_player])
+        opponent_pit_counters = sum(pits[opponent])
+        score += (ai_pit_counters - opponent_pit_counters) * 10
+        
+        # Tertiary: Mobility (number of non-empty pits)
+        ai_mobility = sum(1 for col in range(COLS) 
+                         if not rubbish_holes[ai_player][col] and pits[ai_player][col] > 0)
+        opponent_mobility = sum(1 for col in range(COLS) 
+                              if not rubbish_holes[opponent][col] and pits[opponent][col] > 0)
+        score += (ai_mobility - opponent_mobility) * 5
+        
+        return score
+
     def evaluate_move(self, col):
+        """Basic move evaluation for easy and medium AI"""
         score = 0
         row = 1
         
+        # Base score from counters in the pit
         score += self.pits[row][col].counters * 10
         
         counters = self.pits[row][col].counters
@@ -249,15 +506,18 @@ class Pallanguzhi(arcade.View):
             if self.rubbish_holes[current_row][current_col]:
                 continue
                 
-            if 1 == 4:  # Simplified pasu check
+            # Pasu capture potential
+            if 1 == 4:  # Simplified check
                 score += 40
         
+        # Standard capture potential
         if current_row == 1:
             score += 20
         
         return score
 
     def on_mouse_motion(self, x, y, dx, dy):
+        # Highlight pit under mouse
         self.highlighted_pit = None
         
         if self.distributing or (self.ai_mode and self.current_player == 1):
@@ -347,7 +607,7 @@ class Pallanguzhi(arcade.View):
                 capturing_player = pit.row  # The owner of the pit gets the capture
                 self.captures[capturing_player] += 4
                 pit.counters = 0
-                self.temporary_message = f"Player {capturing_player + 1} got Pasu capture! +4 counters from P{capturing_player + 1}'s pit {c+1}"
+                self.temporary_message = f"Player {capturing_player + 1} got Pasu capture! +4 counters from P{capturing_player + 1}'s pit {pit.col + 1}"
                 self.message_timer = 3.0
 
         else:
@@ -375,7 +635,7 @@ class Pallanguzhi(arcade.View):
                 
                 if beyond_index < len(next_path) and beyond_pit.counters > 0:
                     self.captures[self.current_player] += beyond_pit.counters
-                    self.temporary_message =f"Player {self.current_player + 1} collected {beyond_pit.counters} counters from P{beyond_pit.row + 1}'s pit {beyond_pit.col + 1}!"
+                    self.temporary_message = f"Player {self.current_player + 1} collected {beyond_pit.counters} counters from P{beyond_pit.row + 1}'s pit {beyond_pit.col + 1}!"
                     self.message_timer = 4.0
                     beyond_pit.counters = 0
 

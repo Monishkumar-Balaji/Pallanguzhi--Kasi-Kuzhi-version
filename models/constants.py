@@ -1,4 +1,3 @@
-#constants.py
 import math
 import arcade
 
@@ -18,3 +17,8 @@ PIT_COLOR = arcade.color.LIGHT_BROWN
 BOARD_COLOR = arcade.color.DARK_BROWN
 COUNTER_COLOR = arcade.color.GOLD
 CAPTURE_COLOR = arcade.color.RED
+
+# AI Difficulties
+AI_EASY = "easy"
+AI_MEDIUM = "medium" 
+AI_HARD = "hard"

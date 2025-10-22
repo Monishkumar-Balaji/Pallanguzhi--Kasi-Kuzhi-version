@@ -5,9 +5,10 @@ from .constants import *
 class WelcomeView(arcade.View):
     def __init__(self):
         super().__init__()
-        self.rounds = 3  # Default number of rounds
+        self.rounds = 3
         self.showing_round_input = False
         self.round_input = "3"
+        self.selected_ai_difficulty = AI_MEDIUM  # Default AI difficulty
 
     def on_show(self):
         arcade.set_background_color(arcade.color.DARK_BLUE)
@@ -18,11 +19,13 @@ class WelcomeView(arcade.View):
                          arcade.color.WHITE, 28, anchor_x="center")
 
         if not self.showing_round_input:
-            arcade.draw_text("Press M to Play Multiplayer", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 40,
+            arcade.draw_text("Press M to Play Multiplayer", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 60,
                              arcade.color.LIGHT_GREEN, 20, anchor_x="center")
-            arcade.draw_text("Press A to Play with AI", SCREEN_WIDTH/2, SCREEN_HEIGHT/2,
+            arcade.draw_text("Press A to Play with AI", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 30,
                              arcade.color.LIGHT_YELLOW, 20, anchor_x="center")
-            arcade.draw_text(f"Rounds: {self.rounds} (Press R to change)", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 40,
+            arcade.draw_text(f"AI Difficulty: {self.selected_ai_difficulty.title()} (Press D to change)", 
+                             SCREEN_WIDTH/2, SCREEN_HEIGHT/2, arcade.color.LIGHT_BLUE, 16, anchor_x="center")
+            arcade.draw_text(f"Rounds: {self.rounds} (Press R to change)", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 30,
                              arcade.color.LIGHT_BLUE, 16, anchor_x="center")
         else:
             arcade.draw_text("Enter number of rounds (1-10):", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 20,
@@ -45,7 +48,7 @@ class WelcomeView(arcade.View):
             elif key in (arcade.key.KEY_0, arcade.key.KEY_1, arcade.key.KEY_2, arcade.key.KEY_3, 
                         arcade.key.KEY_4, arcade.key.KEY_5, arcade.key.KEY_6, arcade.key.KEY_7, 
                         arcade.key.KEY_8, arcade.key.KEY_9):
-                if len(self.round_input) < 2:  # Limit to 2 digits
+                if len(self.round_input) < 2:
                     self.round_input += chr(key)
         else:
             if key == arcade.key.M:
@@ -54,11 +57,17 @@ class WelcomeView(arcade.View):
                 self.window.show_view(game_view)
             elif key == arcade.key.A:
                 from .pallanguzhi import Pallanguzhi
-                game_view = Pallanguzhi(ai_mode=True, total_rounds=self.rounds)
+                game_view = Pallanguzhi(ai_mode=True, total_rounds=self.rounds, ai_difficulty=self.selected_ai_difficulty)
                 self.window.show_view(game_view)
             elif key == arcade.key.R:
                 self.showing_round_input = True
                 self.round_input = str(self.rounds)
+            elif key == arcade.key.D:
+                # Cycle through AI difficulties
+                difficulties = [AI_EASY, AI_MEDIUM, AI_HARD]
+                current_index = difficulties.index(self.selected_ai_difficulty)
+                next_index = (current_index + 1) % len(difficulties)
+                self.selected_ai_difficulty = difficulties[next_index]
 
 #----------------- Game over view ------------------#
 
