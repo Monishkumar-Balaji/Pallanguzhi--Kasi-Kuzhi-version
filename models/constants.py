@@ -1,3 +1,4 @@
+#constants.py
 import math
 import arcade
 
