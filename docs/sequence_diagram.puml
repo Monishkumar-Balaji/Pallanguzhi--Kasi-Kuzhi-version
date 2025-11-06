@@ -1,0 +1,65 @@
+@startuml
+title Pallanguzhi — High-level sequence (Home → Game → End)
+
+actor Player
+participant "WelcomeView" as Welcome
+participant "AISelectView" as AISelect
+participant "BottleSpinView" as Bottle
+participant "Pallanguzhi (Game)" as Game
+participant "Pit" as Pit
+participant "AI Controller" as AI
+participant "GameOverView" as GameOver
+
+== From Home to Game ==
+Player -> Welcome: click "One vs AI" or "One vs One"
+alt One vs AI
+  Welcome -> AISelect: show()
+  Player -> AISelect: select difficulty
+  AISelect -> Bottle: show(ai_mode=True, ai_level=chosen)
+else One vs One
+  Welcome -> Bottle: show(ai_mode=False)
+end
+Player -> Bottle: click / press SPACE to spin
+Bottle -> Bottle: run spin animation (angular_velocity, wobble, particles)
+Bottle -> Bottle: determine result (top/bottom)
+Bottle -> Game: _launch_game(result, ai_mode, ai_level)
+
+== Gameplay loop ==
+Game -> Player: render board (pits, stores, turn indicator)
+loop Each turn
+  alt Player's human turn
+    Player -> Game: click pit (row,col)
+    Game -> Game: _player_move(row,col) // remove beads, set active_beads
+    Game -> Game: schedule _distribute_step (tick)
+    loop per-bead tick
+      Game -> Pit: add bead to next pit or store
+      Game -> Game: update last_pos, decrement active_beads
+    end
+    Game -> Game: finalize distribution (capture / extra-turn / switch turn)
+    Game -> Game: _check_end_condition()
+  else AI's turn
+    Game -> AI: schedule _ai_make_move (AI_THINK_DELAY)
+    AI -> AI: if EASY random choice
+    AI -> AI: if MEDIUM simulate heuristics
+    AI -> AI: if HARD call _minimax with alpha-beta (depth-limited)
+    AI -> Game: choose column -> Game._player_move(1, col)
+  end
+end
+
+== End of Round ==
+Game -> Game: _check_end_condition detects side empty
+Game -> Game: collect remaining beads into stores
+Game -> Game: compute winner
+Game -> GameOver: show(winner, scores)
+GameOver -> Player: display final results, "Play Again" / "Return Home"
+Player -> Welcome: press ENTER to return
+
+note over Game,AI: Minimax details (HARD):
+note over AI
+- compact board state (2xCOLS pit array + stores)
+- simulate_move_state() returns new state and next_player (handles extra-turn)
+- _minimax(state, depth, alpha, beta) recursively searches
+- evaluation = store_diff*1000 + mobility*30 + balance*5
+end note
+
+@enduml
