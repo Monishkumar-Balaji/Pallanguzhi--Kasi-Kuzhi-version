@@ -1,378 +1,672 @@
 from .constants import *
 from .pit import Pit
 import arcade
+import math
 import random
 import copy
-import math
 
 
 class Pallanguzhi(arcade.View):
-    def __init__(self, ai_mode=False, ai_level=AI_MEDIUM):
+    def __init__(self, ai_mode=False, total_rounds=3, current_round=1, previous_captures=None, ai_difficulty=AI_MEDIUM):
         super().__init__()
         arcade.set_background_color(BOARD_COLOR)
         self.ai_mode = ai_mode
-        self.ai_level = ai_level
+        self.total_rounds = total_rounds
+        self.current_round = current_round
+        self.ai_difficulty = ai_difficulty
 
         # Create 2D grid of pits
         self.pits = []
-        spacing_x = (SCREEN_WIDTH - 220) // (COLS + 1)
-        spacing_y = (SCREEN_HEIGHT - 80) // (ROWS + 1)
+        spacing_x = SCREEN_WIDTH // (COLS + 1)
+        spacing_y = SCREEN_HEIGHT // (ROWS + 1)
 
         for row in range(ROWS):
             row_pits = []
             for col in range(COLS):
-                x = 200 + (col + 1) * spacing_x
-                y = SCREEN_HEIGHT - 60 - (row + 1) * spacing_y
+                x = (col + 1) * spacing_x
+                y = SCREEN_HEIGHT - (row + 1) * spacing_y
                 row_pits.append(Pit(row, col, x, y))
             self.pits.append(row_pits)
 
-        # stores for each player
-        self.captures = [0, 0]
-
-        # Turn and distribution state
+        # Track turn and captures
         self.current_player = 0  # 0 = top row, 1 = bottom row
+        self.active_counters = 0
+        self.distribution_path = []
+        self.last_row, self.last_col = None, None
         self.distributing = False
-        # animation distribution state
-        self.active_beads = 0
-        self.distribution_idx = None
-        self.distribution_last_pos = None
-        self.message = None
-        self.message_timer = 0.0
-        self.hovered = None
-        self.hand_animation = None  # placeholder timer for hand animation
+        self.captures = previous_captures if previous_captures else [0, 0]
+        self.temporary_message = None
+        self.message_timer = 0
+        
+        # Animation and highlighting
+        self.highlighted_pit = None
+        self.selected_pit = None
+        self.sowing_pit = None
+        
+        # Rubbish holes
+        self.rubbish_holes = [[False] * COLS for _ in range(ROWS)]
+        
+        # Initialize pits for new round
+        self.initialize_round()
 
-        # Precompute circle order: top row left->right, store0 (owner 0), bottom row right->left, store1 (owner1)
-        self.circle = []
-        for c in range(COLS):
-            self.circle.append(('pit', 0, c))
-        self.circle.append(('store', 0, None))
-        for c in reversed(range(COLS)):
-            self.circle.append(('pit', 1, c))
-        self.circle.append(('store', 1, None))
+    def initialize_round(self):
+        """Initialize pits for the current round"""
+        if self.current_round == 1:
+            # First round - all pits get 5 counters
+            for row in range(ROWS):
+                for col in range(COLS):
+                    self.pits[row][col].counters = START_COUNTERS
+                    self.rubbish_holes[row][col] = False
+        else:
+            # Subsequent rounds
+            for row in range(ROWS):
+                for col in range(COLS):
+                    self.rubbish_holes[row][col] = False
+                    self.pits[row][col].counters = 0
+            
+            # Calculate how many pits each player can fill
+            for player in range(2):
+                pits_to_fill = self.captures[player] // START_COUNTERS
+                pits_to_fill = min(pits_to_fill, COLS)
+                
+                # Fill the pits for this player
+                for col in range(pits_to_fill):
+                    self.pits[player][col].counters = START_COUNTERS
+                    self.captures[player] -= START_COUNTERS
+                
+                # Mark remaining pits as rubbish holes
+                for col in range(pits_to_fill, COLS):
+                    self.rubbish_holes[player][col] = True
 
     def on_draw(self):
         self.clear()
+
         # Draw pits
         for row in self.pits:
             for pit in row:
-                pit.draw()
+                is_hover = (self.highlighted_pit == (pit.row, pit.col))
+                is_selected = (self.selected_pit == (pit.row, pit.col))
+                is_sowing = (self.sowing_pit == (pit.row, pit.col))
+                
+                pit.draw(highlight_type="hover" if is_hover else 
+                        "selected" if is_selected else 
+                        "sowing" if is_sowing else None,
+                        is_rubbish=self.rubbish_holes[pit.row][pit.col])
 
-        # Draw stores (bowls)
-        arcade.draw_circle_filled(100, SCREEN_HEIGHT - 50, PIT_RADIUS + 10, CAPTURE_COLOR)
+        # Draw bowls
+        arcade.draw_circle_filled(100, SCREEN_HEIGHT - 50, PIT_RADIUS, CAPTURE_COLOR)
         arcade.draw_text(f"P1: {self.captures[0]}", 70, SCREEN_HEIGHT - 60, arcade.color.WHITE, 16)
-        arcade.draw_circle_filled(100, 50, PIT_RADIUS + 10, CAPTURE_COLOR)
+
+        arcade.draw_circle_filled(100, 50, PIT_RADIUS, CAPTURE_COLOR)
         arcade.draw_text(f"P2: {self.captures[1]}", 70, 40, arcade.color.WHITE, 16)
 
-        # Turn info
-        turn_text = "Your Turn" if (not self.ai_mode and self.current_player == 1) else f"Player {self.current_player + 1}'s turn"
-        if self.ai_mode:
-            turn_text = "Your Turn" if self.current_player == 0 else "AI's Turn"
-        arcade.draw_text(turn_text, SCREEN_WIDTH - 220, SCREEN_HEIGHT - 30, arcade.color.WHITE, 18)
+        # Round and turn info
+        arcade.draw_text(f"Round {self.current_round}/{self.total_rounds}", 
+                        SCREEN_WIDTH - 200, SCREEN_HEIGHT - 60, arcade.color.WHITE, 14)
+        
+        if self.ai_mode and self.current_player == 1:
+            turn_text = "AI's turn"
+        else:
+            turn_text = f"Player {self.current_player + 1}'s turn"
+        arcade.draw_text(turn_text, SCREEN_WIDTH - 200, SCREEN_HEIGHT - 30, arcade.color.WHITE, 18)
 
-        # message
-        if self.message and self.message_timer > 0:
-            arcade.draw_text(self.message, SCREEN_WIDTH // 2, SCREEN_HEIGHT - 30, arcade.color.WHITE, 16, anchor_x="center")
+        # Draw temporary message if active
+        if self.temporary_message and self.message_timer > 0:
+            # Determine message position based on which player the message is about
+            message_y = SCREEN_HEIGHT - 50  # Default top position for Player 1
+            
+            # Check if message is about Player 2
+            if "Player 2" in self.temporary_message:
+                message_y = 50  # Bottom position for Player 2
+            
+            arcade.draw_text(
+                self.temporary_message,
+                SCREEN_WIDTH // 2,
+                message_y,
+                arcade.color.WHITE,
+                18,
+                anchor_x="center"
+            )
 
-    def set_message(self, txt, duration=2.5):
-        self.message = txt
-        self.message_timer = duration
+    def check_termination(self):
+        """Check if the round should end - when ANY player has no counters in their pits"""
+        # Only check termination when not distributing (after a move is complete)
+        if self.distributing:
+            return False
+            
+        # Check if any player has no counters in their non-rubbish pits
+        for player in range(2):
+            player_has_counters = False
+            for col in range(COLS):
+                if (not self.rubbish_holes[player][col] and 
+                    self.pits[player][col].counters > 0):
+                    player_has_counters = True
+                    break
+            
+            # If any player has no counters, round ends immediately
+            if not player_has_counters:
+                # The player with counters gets all remaining counters
+                opponent = 1 - player
+                remaining_counters = 0
+                
+                # Collect all remaining counters from both sides
+                for row in range(ROWS):
+                    for col in range(COLS):
+                        if not self.rubbish_holes[row][col]:
+                            remaining_counters += self.pits[row][col].counters
+                            self.pits[row][col].counters = 0
+                
+                # Add remaining counters to opponent's captures
+                self.captures[opponent] += remaining_counters
+                self.temporary_message = f"Player {player + 1} has no moves! Player {opponent + 1} collects {remaining_counters} counters!"
+                self.message_timer = 3.0
+                self.end_round()
+                return True
+        
+        return False
+
+    def end_round(self):
+        winner = 1 if self.captures[0] > self.captures[1] else 2
+        final = (self.current_round >= self.total_rounds)
+        
+        from .viewScreens import GameOverView
+        game_over_view = GameOverView(winner, self.captures, self.total_rounds, self.current_round, final)
+        
+        if not final:
+            game_over_view.next_round_captures = self.captures[:]
+        
+        self.window.show_view(game_over_view)
 
     def on_update(self, delta_time):
         if self.message_timer > 0:
             self.message_timer -= delta_time
             if self.message_timer <= 0:
-                self.message = None
+                self.temporary_message = None
 
-        # run AI move if needed
-        if self.ai_mode and self.current_player == 1 and not self.distributing:
-            # schedule AI think delay then perform move
-            arcade.schedule(self._ai_make_move, AI_THINK_DELAY)
-            self.distributing = True  # block user input until scheduled
+        # Only check termination when not in the middle of a move
+        if not self.distributing:
+            self.check_termination()
+
+        # AI move - only if game hasn't terminated and not distributing
+        if (self.ai_mode and self.current_player == 1 and 
+            not self.distributing and not self.check_termination()):
+            arcade.schedule(self.ai_move, 1.0)
 
     def counters_in_pits(self, row_pits):
-        return sum(p.counters for p in row_pits)
+        return sum(pit.counters for pit in row_pits)
+
+    def ai_move(self, delta_time):
+        arcade.unschedule(self.ai_move)
+        
+        if self.check_termination():
+            return
+        
+        valid_moves = []
+        for col in range(COLS):
+            if (self.pits[1][col].counters > 0 and 
+                not self.rubbish_holes[1][col]):
+                valid_moves.append(col)
+        
+        if not valid_moves:
+            self.check_termination()
+            return
+
+        if self.ai_difficulty == AI_EASY:
+            best_move = self.easy_ai(valid_moves)
+        elif self.ai_difficulty == AI_MEDIUM:
+            best_move = self.medium_ai(valid_moves)
+        else:  # AI_HARD
+            best_move = self.hard_ai(valid_moves)
+        
+        if best_move is not None:
+            pit = self.pits[1][best_move]
+            self.selected_pit = (pit.row, pit.col)
+            self.start_distribution(pit)
+
+    def easy_ai(self, valid_moves):
+        """Easy AI: Makes suboptimal moves, sometimes chooses worse options"""
+        # Evaluate all moves
+        moves_with_scores = []
+        for col in valid_moves:
+            score = self.evaluate_move(col)
+            moves_with_scores.append((col, score))
+        
+        # Sort by score (lowest first for easy AI)
+        moves_with_scores.sort(key=lambda x: x[1])
+        
+        # Easy AI has 70% chance to choose a suboptimal move, 30% chance for random
+        if random.random() < 0.7 and len(moves_with_scores) > 1:
+            # Choose from the bottom half (worse moves)
+            half = len(moves_with_scores) // 2
+            return random.choice(moves_with_scores[:half])[0]
+        else:
+            # Completely random move
+            return random.choice(valid_moves)
+
+    def medium_ai(self, valid_moves):
+        """Medium AI: Generally chooses good moves with some randomness"""
+        best_score = -999
+        good_moves = []
+        
+        for col in valid_moves:
+            score = self.evaluate_move(col)
+            if score > best_score:
+                best_score = score
+                good_moves = [col]
+            elif score == best_score:
+                good_moves.append(col)
+        
+        # Medium AI has 80% chance to choose best move, 20% chance for second best
+        if len(good_moves) > 1 and random.random() < 0.2:
+            return random.choice(good_moves[1:])
+        else:
+            return random.choice(good_moves)
+
+    def hard_ai(self, valid_moves):
+        """Hard AI: Uses minimax with alpha-beta pruning for optimal moves"""
+        best_score = -float('inf')
+        best_moves = []
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        for col in valid_moves:
+            # Create a copy of the game state for simulation
+            state = self.get_game_state()
+            
+            # Simulate the move
+            new_state, extra_turn = self.simulate_move_state(state, col, 1)  # AI is player 1
+            
+            if extra_turn:
+                # If extra turn, maximize further
+                score = self.minimax(new_state, 2, alpha, beta, True, 1)  # AI continues
+            else:
+                # Opponent's turn
+                score = self.minimax(new_state, 2, alpha, beta, False, 1)  # Opponent plays
+            
+            if score > best_score:
+                best_score = score
+                best_moves = [col]
+            elif score == best_score:
+                best_moves.append(col)
+            
+            alpha = max(alpha, best_score)
+            if beta <= alpha:
+                break
+        
+        return random.choice(best_moves) if best_moves else valid_moves[0]
+
+    def minimax(self, state, depth, alpha, beta, maximizing_player, current_player):
+        """
+        Minimax algorithm with alpha-beta pruning
+        state: (pits, captures, rubbish_holes)
+        """
+        pits, captures, rubbish_holes = state
+        
+        # Terminal node or depth limit reached
+        if depth == 0 or self.is_terminal_state(pits, rubbish_holes, current_player):
+            return self.evaluate_state(state, 1)  # Evaluate from AI's perspective (player 1)
+        
+        valid_moves = self.get_valid_moves(pits, rubbish_holes, current_player)
+        
+        if not valid_moves:
+            # No moves available - switch player or terminal
+            if self.is_terminal_state(pits, rubbish_holes, 1 - current_player):
+                return self.evaluate_state(state, 1)
+            else:
+                return self.minimax(state, depth - 1, alpha, beta, not maximizing_player, 1 - current_player)
+        
+        if maximizing_player:
+            max_eval = -float('inf')
+            for col in valid_moves:
+                new_state, extra_turn = self.simulate_move_state(state, col, current_player)
+                
+                if extra_turn:
+                    # Same player continues
+                    eval = self.minimax(new_state, depth - 1, alpha, beta, True, current_player)
+                else:
+                    # Switch player
+                    eval = self.minimax(new_state, depth - 1, alpha, beta, False, 1 - current_player)
+                
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid_moves:
+                new_state, extra_turn = self.simulate_move_state(state, col, current_player)
+                
+                if extra_turn:
+                    # Same player continues (minimizing)
+                    eval = self.minimax(new_state, depth - 1, alpha, beta, False, current_player)
+                else:
+                    # Switch player (maximizing)
+                    eval = self.minimax(new_state, depth - 1, alpha, beta, True, 1 - current_player)
+                
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    def get_game_state(self):
+        """Get current game state for simulation"""
+        pits = [[self.pits[row][col].counters for col in range(COLS)] for row in range(ROWS)]
+        captures = self.captures.copy()
+        rubbish_holes = copy.deepcopy(self.rubbish_holes)
+        return (pits, captures, rubbish_holes)
+
+    def simulate_move_state(self, state, col, player):
+        """
+        Simulate a move and return new state and whether extra turn is granted
+        Returns: (new_state, extra_turn)
+        """
+        pits, captures, rubbish_holes = copy.deepcopy(state)
+        row = player
+        
+        # Start distribution
+        counters = pits[row][col]
+        pits[row][col] = 0
+        current_row, current_col = row, col
+        
+        # Distribute counters
+        for _ in range(counters):
+            # Move to next pit
+            if current_row == 1:
+                current_col += 1
+                if current_col >= COLS:
+                    current_row = 0
+                    current_col = COLS - 1
+            else:
+                current_col -= 1
+                if current_col < 0:
+                    current_row = 1
+                    current_col = 0
+            
+            # Skip rubbish holes
+            if rubbish_holes[current_row][current_col]:
+                continue
+                
+            pits[current_row][current_col] += 1
+            
+            # Check for Pasu capture during distribution
+            if pits[current_row][current_col] == 4:
+                capturing_player = current_row  # Owner of the pit gets the capture
+                captures[capturing_player] += 4
+                pits[current_row][current_col] = 0
+    
+        # Check for standard capture at the end
+        last_row, last_col = current_row, current_col
+        
+        # Check if turn continues (if last pit has counters to pick up)
+        next_path = self.get_simulation_path(last_row, last_col, rubbish_holes)
+        if next_path:
+            next_r, next_c = next_path[0]
+            extra_turn = (pits[next_r][next_c] > 0)
+        else:
+            extra_turn = False
+        
+        # Check for standard capture
+        if len(next_path) > 1 and pits[next_r][next_c] == 0:
+            beyond_r, beyond_c = next_path[1]
+            if not rubbish_holes[beyond_r][beyond_c] and pits[beyond_r][beyond_c] > 0:
+                captures[player] += pits[beyond_r][beyond_c]
+                pits[beyond_r][beyond_c] = 0
+        
+        return (pits, captures, rubbish_holes), extra_turn
+
+    def get_simulation_path(self, start_row, start_col, rubbish_holes):
+        """Get distribution path for simulation"""
+        path = []
+        r, c = start_row, start_col
+        
+        for _ in range(COLS * 2):  # Enough for one full cycle
+            if r == 1:
+                c += 1
+                if c >= COLS:
+                    r = 0
+                    c = COLS - 1
+            else:
+                c -= 1
+                if c < 0:
+                    r = 1
+                    c = 0
+            
+            if not rubbish_holes[r][c]:
+                path.append((r, c))
+        
+        return path
+
+    def get_valid_moves(self, pits, rubbish_holes, player):
+        """Get valid moves for a player in the given state"""
+        valid_moves = []
+        for col in range(COLS):
+            if pits[player][col] > 0 and not rubbish_holes[player][col]:
+                valid_moves.append(col)
+        return valid_moves
+
+    def is_terminal_state(self, pits, rubbish_holes, player):
+        """Check if the game is in a terminal state for the given player"""
+        for col in range(COLS):
+            if not rubbish_holes[player][col] and pits[player][col] > 0:
+                return False
+        return True
+
+    def evaluate_state(self, state, ai_player):
+        """
+        Evaluate the game state from AI's perspective
+        Higher score = better for AI
+        """
+        pits, captures, rubbish_holes = state
+        opponent = 1 - ai_player
+        
+        score = 0
+        
+        # Primary: Capture difference (most important)
+        score += (captures[ai_player] - captures[opponent]) * 1000
+        
+        # Secondary: Counter advantage in pits
+        ai_pit_counters = sum(pits[ai_player])
+        opponent_pit_counters = sum(pits[opponent])
+        score += (ai_pit_counters - opponent_pit_counters) * 10
+        
+        # Tertiary: Mobility (number of non-empty pits)
+        ai_mobility = sum(1 for col in range(COLS) 
+                         if not rubbish_holes[ai_player][col] and pits[ai_player][col] > 0)
+        opponent_mobility = sum(1 for col in range(COLS) 
+                              if not rubbish_holes[opponent][col] and pits[opponent][col] > 0)
+        score += (ai_mobility - opponent_mobility) * 5
+        
+        return score
+
+    def evaluate_move(self, col):
+        """Basic move evaluation for easy and medium AI"""
+        score = 0
+        row = 1
+        
+        # Base score from counters in the pit
+        score += self.pits[row][col].counters * 10
+        
+        counters = self.pits[row][col].counters
+        current_row, current_col = row, col
+        
+        for i in range(counters):
+            if current_row == 1:
+                current_col += 1
+                if current_col >= COLS:
+                    current_row = 0
+                    current_col = COLS - 1
+            else:
+                current_col -= 1
+                if current_col < 0:
+                    current_row = 1
+                    current_col = 0
+            
+            if self.rubbish_holes[current_row][current_col]:
+                continue
+                
+            # Pasu capture potential
+            if 1 == 4:  # Simplified check
+                score += 40
+        
+        # Standard capture potential
+        if current_row == 1:
+            score += 20
+        
+        return score
 
     def on_mouse_motion(self, x, y, dx, dy):
-        # highlight valid pits for hovering
-        for row in self.pits:
-            for pit in row:
-                pit.highlight = False
-        for pit in self.pits[self.current_player]:
-            dist = math.hypot(x - pit.x, y - pit.y)
-            if dist <= PIT_RADIUS and pit.counters > 0 and (not (self.ai_mode and self.current_player == 1)):
-                pit.highlight = True
+        # Highlight pit under mouse
+        self.highlighted_pit = None
+        
+        if self.distributing or (self.ai_mode and self.current_player == 1):
+            return
+            
+        for i, row_pit in enumerate(self.pits):
+            for col in range(COLS):
+                pit = row_pit[col]
+                if self.rubbish_holes[pit.row][pit.col]:
+                    continue
+                    
+                dist = math.sqrt((x - pit.x) ** 2 + (y - pit.y) ** 2)
+                if dist <= PIT_RADIUS and pit.counters > 0 and i == self.current_player:
+                    self.highlighted_pit = (pit.row, pit.col)
+                    return
 
     def on_mouse_press(self, x, y, button, modifiers):
         if self.distributing:
             return
-        # check click on pits for current player
-        for pit in self.pits[self.current_player]:
-            dist = math.hypot(x - pit.x, y - pit.y)
-            if dist <= PIT_RADIUS and pit.counters > 0:
-                self._player_move(pit.row, pit.col)
-                return
-
-    def _index_of(self, pos):
-        # pos is ('pit',row,col) or ('store',owner,None)
-        for i, p in enumerate(self.circle):
-            if p == pos:
-                return i
-        return None
-
-    def _player_move(self, row, col):
-        # start sowing from selected pit
-        if self.pits[row][col].counters == 0:
+        
+        if self.ai_mode and self.current_player == 1:
             return
-        # Begin animated distribution: schedule per-bead drops
-        beads = self.pits[row][col].counters
-        self.pits[row][col].counters = 0
-        self.active_beads = beads
-        start_pos = ('pit', row, col)
-        self.distribution_idx = self._index_of(start_pos)
-        self.distribution_last_pos = None
-        self.distributing = True
-        arcade.schedule(self._distribute_step, 0.12)
-
-    def _distribute_step(self, delta_time):
-        # drop one bead per scheduled tick
-        if self.active_beads > 0:
-            # advance index to next valid position
-            while True:
-                self.distribution_idx = (self.distribution_idx + 1) % len(self.circle)
-                p = self.circle[self.distribution_idx]
-                # skip opponent's store
-                if p[0] == 'store' and p[1] != self.current_player:
+        
+        # Check if round should end before processing click
+        if self.check_termination():
+            return
+        
+        for i, row_pit in enumerate(self.pits):
+            for col in range(COLS):
+                pit = row_pit[col]
+                if self.rubbish_holes[pit.row][pit.col]:
                     continue
-                break
-
-            # apply bead to pit or store
-            if p[0] == 'pit':
-                self.pits[p[1]][p[2]].counters += 1
-            else:
-                self.captures[p[1]] += 1
-
-            self.distribution_last_pos = p
-            self.active_beads -= 1
-            return
-
-        # active_beads == 0 -> finalize distribution
-        arcade.unschedule(self._distribute_step)
-        last_pos = self.distribution_last_pos
-        # If last landed in own store -> extra turn (do not switch)
-        if last_pos and last_pos[0] == 'store' and last_pos[1] == self.current_player:
-            self.set_message("Extra turn!", 1.8)
-            self.distributing = False
-            self._check_end_condition()
-            return
-
-        # If last landed in own empty pit -> capture own + opposite
-        if last_pos and last_pos[0] == 'pit':
-            r, c = last_pos[1], last_pos[2]
-            pit = self.pits[r][c]
-            if r == self.current_player and pit.counters == 1:
-                opp = self.pits[1 - r][COLS - 1 - c]
-                if opp.counters > 0:
-                    captured = opp.counters + pit.counters
-                    opp.counters = 0
-                    pit.counters = 0
-                    self.captures[self.current_player] += captured
-                    self.set_message(f"Captured {captured} beads!", 2.5)
-                    self.distributing = False
-                    # switch turn after capture
-                    self.current_player = 1 - self.current_player
-                    self._check_end_condition()
+                    
+                dist = math.sqrt((x - pit.x) ** 2 + (y - pit.y) ** 2)
+                if dist <= PIT_RADIUS:
+                    if pit.counters > 0 and i == self.current_player:
+                        self.selected_pit = (pit.row, pit.col)
+                        self.start_distribution(pit)
                     return
 
-        # otherwise switch turn
-        self.distributing = False
-        self.current_player = 1 - self.current_player
-        self._check_end_condition()
+    def start_distribution(self, pit):
+        self.active_counters = pit.counters
+        pit.counters = 0
+        self.distribution_path = self.get_distribution_path(pit.row, pit.col)
+        self.last_row, self.last_col = pit.row, pit.col
+        self.distributing = True
+        arcade.schedule(self.distribute_step, 0.3)
 
-    def _check_end_condition(self):
-        top_sum = self.counters_in_pits(self.pits[0])
-        bot_sum = self.counters_in_pits(self.pits[1])
-        if top_sum == 0 or bot_sum == 0:
-            # collect remaining into respective store
-            self.captures[0] += top_sum
-            self.captures[1] += bot_sum
-            for pit in self.pits[0]:
-                pit.counters = 0
-            for pit in self.pits[1]:
-                pit.counters = 0
-            # determine winner
-            winner = 1 if self.captures[0] > self.captures[1] else 2
-            from .viewScreens import GameOverView
-            game_over = GameOverView(winner, self.captures)
-            self.window.show_view(game_over)
-
-    # ---------------- AI ----------------
-    def _ai_make_move(self, delta_time):
-        arcade.unschedule(self._ai_make_move)
-        self.distributing = False
-        # pick move based on difficulty (use medium heuristic for now)
-        valid_moves = [c for c in range(COLS) if self.pits[1][c].counters > 0]
-        if not valid_moves:
-            self._check_end_condition()
-            return
-
-        # choose based on ai_level
-        if self.ai_level == AI_EASY:
-            choice = random.choice(valid_moves)
-        elif self.ai_level == AI_MEDIUM:
-            best_score = -999
-            choice = random.choice(valid_moves)
-            for col in valid_moves:
-                score = self._simulate_move_score(1, col)
-                if score > best_score:
-                    best_score = score
-                    choice = col
-        else:  # AI_HARD: use minimax with alpha-beta
-            # prepare compact board representation: pits as 2xCOLS ints and stores
-            board_pits = [[self.pits[r][c].counters for c in range(COLS)] for r in range(ROWS)]
-            stores = [self.captures[0], self.captures[1]]
-            ai_player = 1
-            depth = 6  # adjust for strength/performance
-            best_score = -10**9
-            choice = random.choice(valid_moves)
-            alpha = -10**9
-            beta = 10**9
-            for col in valid_moves:
-                new_pits, new_stores, next_player = self._simulate_move_state(board_pits, stores, ai_player, col)
-                # if terminal, evaluate directly
-                score = self._minimax(new_pits, new_stores, next_player, depth - 1, alpha, beta, ai_player)
-                if score > best_score:
-                    best_score = score
-                    choice = col
-                    alpha = max(alpha, best_score)
-
-        # perform AI move
-        self._player_move(1, choice)
-
-    def _simulate_move_state(self, pits, stores, player, col):
-        """Simulate move on simple arrays. Return (new_pits, new_stores, next_player)."""
-        # copy state
-        new_pits = [row[:] for row in pits]
-        new_stores = stores[:]
-        beads = new_pits[player][col]
-        new_pits[player][col] = 0
-        # build circle positions same as self.circle
-        circle = []
-        for c in range(COLS):
-            circle.append(('pit', 0, c))
-        circle.append(('store', 0, None))
-        for c in reversed(range(COLS)):
-            circle.append(('pit', 1, c))
-        circle.append(('store', 1, None))
-        # find start idx
-        start = ('pit', player, col)
-        idx = 0
-        for i,p in enumerate(circle):
-            if p == start:
-                idx = i
-                break
-        last = None
-        while beads > 0:
-            idx = (idx + 1) % len(circle)
-            p = circle[idx]
-            # skip opponent's store
-            if p[0] == 'store' and p[1] != player:
-                continue
-            if p[0] == 'pit':
-                new_pits[p[1]][p[2]] += 1
+    def get_distribution_path(self, row, col):
+        path = []
+        r, c = row, col
+        
+        for _ in range(70):
+            if r == 1:
+                c += 1
+                if c >= COLS:
+                    r = 0
+                    c = COLS - 1
             else:
-                new_stores[p[1]] += 1
-            last = p
-            beads -= 1
+                c -= 1
+                if c < 0:
+                    r = 1
+                    c = 0
+            
+            if not self.rubbish_holes[r][c]:
+                path.append((r, c))
+                
+        return path
 
-        # check terminal
-        top_sum = sum(new_pits[0])
-        bot_sum = sum(new_pits[1])
-        if top_sum == 0 or bot_sum == 0:
-            # collect remainders
-            new_stores[0] += top_sum
-            new_stores[1] += bot_sum
-            for r in range(ROWS):
-                for c in range(COLS):
-                    new_pits[r][c] = 0
-            # no next player matter; return next_player as -1 to indicate terminal
-            return new_pits, new_stores, -1
+    def distribute_step(self, delta_time):
+        if self.active_counters > 0:
+            if not self.distribution_path:
+                self.distribution_path = self.get_distribution_path(self.last_row, self.last_col)
 
-        # resolve capture / extra turn
-        if last and last[0] == 'store' and last[1] == player:
-            next_player = player  # extra turn
+            r, c = self.distribution_path.pop(0)
+            pit = self.pits[r][c]
+            
+            self.sowing_pit = (r, c)
+            
+            pit.counters += 1
+            self.active_counters -= 1
+            self.last_row, self.last_col = r, c
+
+            # Pasu capture - any pit reaching exactly 4
+            # The capture goes to the player who OWNS the pit, not the distributing player
+            if pit.counters == 4:
+                capturing_player = pit.row  # The owner of the pit gets the capture
+                self.captures[capturing_player] += 4
+                pit.counters = 0
+                self.temporary_message = f"Player {capturing_player + 1} got Pasu capture! +4 counters from P{capturing_player + 1}'s pit {pit.col + 1}"
+                self.message_timer = 3.0
+
         else:
-            next_player = 1 - player
-            # capture rule: last landed in own empty pit (now has 1) and opposite has >0
-            if last and last[0] == 'pit':
-                r, c = last[1], last[2]
-                if r == player and new_pits[r][c] == 1:
-                    opp = new_pits[1 - r][COLS - 1 - c]
-                    if opp > 0:
-                        captured = opp + new_pits[r][c]
-                        new_stores[player] += captured
-                        new_pits[1 - r][COLS - 1 - c] = 0
-                        new_pits[r][c] = 0
-        return new_pits, new_stores, next_player
+            self.sowing_pit = None
+            
+            r, c = self.last_row, self.last_col
+            next_path = self.get_distribution_path(r, c)
+            
+            if not next_path:
+                self.end_turn()
+                return
+                
+            next_r, next_c = next_path[0]
+            next_pit = self.pits[next_r][next_c]
 
-    def _evaluate_state(self, pits, stores, ai_player):
-        """Heuristic evaluation from ai_player perspective (higher = better for AI)."""
-        opp = 1 - ai_player
-        score = 0
-        # primary: store difference
-        score += (stores[ai_player] - stores[opp]) * 1000
-        # secondary: mobility (non-empty pits)
-        score += (sum(1 for x in pits[ai_player] if x>0) - sum(1 for x in pits[opp] if x>0)) * 30
-        # potential captures: if a move would land in empty own pit with opposite beads
-        potential = 0
-        for col in range(COLS):
-            b = pits[ai_player][col]
-            if b == 0:
-                continue
-            # simulate landing index quickly
-            # compute landing position by walking circle length b skipping opponent store
-            circle_len = 2*COLS + 2
-            idx = 0
-            # start pos index
-            # build circle once locally to compute landing
-        # approximate board_balance: favor more beads on AI side
-        score += (sum(pits[ai_player]) - sum(pits[opp])) * 5
-        return score
+            # Standard capture
+            if next_pit.counters == 0 and len(next_path) > 1:
+                beyond_index = 1
+                while beyond_index < len(next_path):
+                    beyond_r, beyond_c = next_path[beyond_index]
+                    beyond_pit = self.pits[beyond_r][beyond_c]
+                    if not self.rubbish_holes[beyond_r][beyond_c]:
+                        break
+                    beyond_index += 1
+                
+                if beyond_index < len(next_path) and beyond_pit.counters > 0:
+                    self.captures[self.current_player] += beyond_pit.counters
+                    self.temporary_message = f"Player {self.current_player + 1} collected {beyond_pit.counters} counters from P{beyond_pit.row + 1}'s pit {beyond_pit.col + 1}!"
+                    self.message_timer = 4.0
+                    beyond_pit.counters = 0
 
-    def _minimax(self, pits, stores, player, depth, alpha, beta, ai_player):
-        """Alpha-beta minimax. Returns score from ai_player perspective."""
-        # terminal check or depth limit
-        if player == -1:
-            # terminal: evaluate directly
-            return self._evaluate_state(pits, stores, ai_player)
-        if depth <= 0:
-            return self._evaluate_state(pits, stores, ai_player)
-
-        valid_moves = [c for c in range(COLS) if pits[player][c] > 0]
-        if not valid_moves:
-            # no moves => terminal-like
-            return self._evaluate_state(pits, stores, ai_player)
-
-        if player == ai_player:
-            value = -10**9
-            for col in valid_moves:
-                new_pits, new_stores, next_player = self._simulate_move_state(pits, stores, player, col)
-                val = self._minimax(new_pits, new_stores, next_player, depth - 1, alpha, beta, ai_player)
-                if val > value:
-                    value = val
-                alpha = max(alpha, value)
-                if alpha >= beta:
+            # Check if next two pits are empty
+            empty_count = 0
+            for i in range(min(2, len(next_path))):
+                check_r, check_c = next_path[i]
+                if (not self.rubbish_holes[check_r][check_c] and 
+                    self.pits[check_r][check_c].counters == 0):
+                    empty_count += 1
+                else:
                     break
-            return value
-        else:
-            # opponent minimizes AI score
-            value = 10**9
-            for col in valid_moves:
-                new_pits, new_stores, next_player = self._simulate_move_state(pits, stores, player, col)
-                val = self._minimax(new_pits, new_stores, next_player, depth - 1, alpha, beta, ai_player)
-                if val < value:
-                    value = val
-                beta = min(beta, value)
-                if beta <= alpha:
-                    break
-            return value
+            
+            if empty_count >= 2:
+                self.end_turn()
+                return
 
+            if next_pit.counters > 0:
+                self.active_counters = next_pit.counters
+                next_pit.counters = 0
+                self.last_row, self.last_col = next_r, next_c
+                self.distribution_path = self.get_distribution_path(next_r, next_c)
+            else:
+                self.distribution_path.pop(0)
+
+    def end_turn(self):
+        """End the current player's turn and switch to next player"""
+        arcade.unschedule(self.distribute_step)
+        self.distributing = False
+        self.sowing_pit = None
+        self.selected_pit = None  # Clear selected pit highlight when turn ends
+        self.current_player = 1 - self.current_player
+        # Check termination after turn ends
+        self.check_termination()

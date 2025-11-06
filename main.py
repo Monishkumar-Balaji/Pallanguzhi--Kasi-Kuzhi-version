@@ -1,14 +1,12 @@
 import arcade
-from models.constants import *
-from models.pit import Pit
-#from models.gameOverView import GameOverView
-from models.pallanguzhi import Pallanguzhi
-from models.viewScreens import *
+from models.viewScreens import WelcomeView
 
+SCREEN_WIDTH = 900
+SCREEN_HEIGHT = 400
+SCREEN_TITLE = "Pallanguzhi"
 
 if __name__ == "__main__":
     window = arcade.Window(SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_TITLE)
     welcome = WelcomeView()
     window.show_view(welcome)
     arcade.run()
-
