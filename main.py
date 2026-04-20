@@ -2,7 +2,7 @@ import arcade
 from models.viewScreens import WelcomeView
 
 SCREEN_WIDTH = 900
-SCREEN_HEIGHT = 400
+SCREEN_HEIGHT = 520
 SCREEN_TITLE = "Pallanguzhi"
 
 if __name__ == "__main__":
