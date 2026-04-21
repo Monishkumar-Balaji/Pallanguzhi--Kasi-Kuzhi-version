@@ -1,2 +1,8 @@
 main1.py
 main2.py
+icon.ico
+build/*
+dist/*
+.spec
+.venv/*
+__pycache__/*
